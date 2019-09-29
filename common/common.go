@@ -92,7 +92,7 @@ func isValidIPPart(s interface{}) bool {
 func isDomain(s string) bool {
 	ns, err := net.LookupHost(s)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Err: %s", err.Error())
+		// fmt.Fprintf(os.Stderr, "Err: %s", err.Error())
 		return false
 	}
 	for _, n := range ns {
@@ -167,7 +167,7 @@ func ParseIP(ipString string) ([]string, error) {
 				}
 			}
 		} else {
-			if ipString != "" && isDomain(item) {
+			if ipString != "" {
 				ipList = append(ipList, item)
 			}
 		}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -73,6 +74,12 @@ var (
 	errorCount   uint64
 	matchCount   uint64
 )
+
+type Addr struct {
+	Host string
+	Port int
+	URL  string
+}
 
 type Headers []string
 
@@ -216,13 +223,12 @@ func main() {
 	ch = make(chan bool, threads)
 	ipList, _ := common.ParseIP(host)
 	portList, _ := common.ParsePort(port)
-	addrList := []string{}
+	addrList := []Addr{}
 
 	if len(ipList) != 0 && len(portList) != 0 {
 		for _, host := range ipList {
 			for _, port := range portList {
-				address := fmt.Sprintf("%s:%d", host, port)
-				addrList = append(addrList, address)
+				addrList = append(addrList, Addr{Host: host, Port: port})
 			}
 		}
 	} else if file != "" {
@@ -239,21 +245,32 @@ func main() {
 			line = strings.TrimSpace(line)
 			host := line
 			port := 80
+			url := ""
 
 			if strings.Contains(line, ":") {
-				hostPort := strings.Split(line, ":")
-				host = hostPort[0]
-				port, _ = strconv.Atoi(hostPort[1])
+				if strings.HasPrefix(line, "http://") || strings.HasPrefix(line, "https://") {
+					if !isValidURL(line) {
+						log.Printf("Failed to resolve %s", line)
+						continue
+					}
+					url = line
+				}
+				var portStr string
+				host, portStr, err = net.SplitHostPort(line)
+				port, _ = strconv.Atoi(portStr)
+				if err != nil {
+					host = line
+					port = 80
+				}
 			}
 
 			if len(portList) != 0 {
 				for _, p := range portList {
-					address := fmt.Sprintf("%s:%d", host, p)
-					addrList = append(addrList, address)
+					// address := fmt.Sprintf("%s%s:%d%s", scheme, host, p, path)
+					addrList = append(addrList, Addr{Host: host, Port: p, URL: url})
 				}
 			} else {
-				address := fmt.Sprintf("%s:%d", host, port)
-				addrList = append(addrList, address)
+				addrList = append(addrList, Addr{Host: host, Port: port, URL: url})
 			}
 		}
 	}
@@ -290,33 +307,41 @@ func main() {
 	}
 
 	if random {
-		common.Shuffle(addrList)
+		Shuffle(addrList)
 	}
 
 	makeHeaders()
 
 	startTime := time.Now()
-	for _, line := range addrList {
+	for _, addr := range addrList {
 		ch <- true
 		wg.Add(1)
 
-		pair := strings.SplitN(line, ":", 2)
-		host := pair[0]
-		port, _ := strconv.Atoi(pair[1])
+		var requestURL string
+		if addr.URL != "" {
+			requestURL = addr.URL
+			u, _ := url.Parse(addr.URL)
+			if path != "/" {
+				requestURL = fmt.Sprintf("%s://%s%s", u.Scheme, u.Host, path)
+			}
+		} else {
+			host := addr.Host
+			port := addr.Port
 
-		var url string
-		if !forceSSL {
-			url = fmt.Sprintf("http://%s%s", line, path)
-		} else {
-			url = fmt.Sprintf("https://%s%s", line, path)
+			if !forceSSL {
+				requestURL = fmt.Sprintf("http://%s:%d%s", host, port, path)
+			} else {
+				requestURL = fmt.Sprintf("https://%s:%d%s", host, port, path)
+			}
+			if addr.Port == 443 {
+				requestURL = fmt.Sprintf("https://%s:%d%s", host, port, path)
+			}
 		}
-		if port == 443 {
-			url = fmt.Sprintf("https://%s%s", host, path)
-		}
-		if isValidURL(url) {
-			go FetchResponse(url)
+
+		if isValidURL(requestURL) {
+			go FetchResponse(requestURL)
 		} else {
-			log.Printf("%s is not a valid url", url)
+			log.Printf("%s is not a valid url", requestURL)
 		}
 	}
 	wg.Wait()
@@ -499,4 +524,14 @@ func FetchResponse(url string) {
 func isValidURL(s string) bool {
 	_, err := url.Parse(s)
 	return err == nil
+}
+
+func Shuffle(vals []Addr) {
+	r := rand.New(rand.NewSource(time.Now().Unix()))
+	for len(vals) > 0 {
+		n := len(vals)
+		randIndex := r.Intn(n)
+		vals[n-1], vals[randIndex] = vals[randIndex], vals[n-1]
+		vals = vals[:n-1]
+	}
 }
