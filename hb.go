@@ -36,6 +36,7 @@ var (
 	displayProgress     bool
 	displayResponseBdoy bool
 	forceSSL            bool
+	random              bool
 
 	file             string
 	f                *os.File
@@ -149,6 +150,7 @@ func init() {
 	flag.BoolVar(&forceSSL, "forcessl", false, "force usage of SSL/HTTPS")
 	flag.BoolVar(&displayProgress, "pg", false, "display progress bar")
 	flag.BoolVar(&displayResponseBdoy, "response", false, "display response body")
+	flag.BoolVar(&random, "random", false, "random request")
 	flag.StringVar(&extractInfoReStr, "regexp", "", "regular expression for extracting information")
 	flag.Parse()
 
@@ -287,6 +289,10 @@ func main() {
 		bar.Start()
 	}
 
+	if random {
+		common.Shuffle(addrList)
+	}
+
 	makeHeaders()
 
 	startTime := time.Now()
@@ -349,6 +355,17 @@ func getVarMap(requestURL string) map[string]string {
 	return varMap
 }
 
+func CheckError(err error) {
+	atomic.AddUint64(&errorCount, 1)
+	if strings.Contains(err.Error(), "too many open files") {
+		color.Red.Printf("[err] %s\n", err)
+		return
+	}
+	if debug {
+		color.Red.Printf("[err] %s\n", err)
+	}
+}
+
 func FetchResponse(url string) {
 	defer func() {
 		<-ch
@@ -396,14 +413,7 @@ func FetchResponse(url string) {
 	client := makeClient()
 	resp, err := client.Do(req)
 	if err != nil {
-		atomic.AddUint64(&errorCount, 1)
-		if strings.Contains(err.Error(), "too many open files") {
-			color.Red.Printf("[err] %s\n", err)
-			return
-		}
-		if debug {
-			color.Red.Printf("[err] %s\n", err)
-		}
+		CheckError(err)
 		return
 	}
 	defer resp.Body.Close()
@@ -421,10 +431,7 @@ func FetchResponse(url string) {
 	// 获取标题
 	body, err := ioutil.ReadAll(utf8Reader)
 	if err != nil {
-		if debug {
-			atomic.AddUint64(&errorCount, 1)
-			color.Red.Printf("[err] %s\n", err)
-		}
+		CheckError(err)
 		body = []byte("")
 	}
 	respBody := string(body)
