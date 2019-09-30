@@ -136,6 +136,9 @@ func getProxyURL(proxyStr string) *url.URL {
 }
 
 func init() {
+	// 408 log
+	// log.SetOutput(ioutil.Discard)
+
 	flag.StringVar(&host, "host", "", "host or host range. 127.0.0.1 | 192.168.1.1/24 | 192.168.1.1-5")
 	flag.StringVar(&port, "p", "", "port or port range. 80. 1-65535 | 21,22,25 | 8080")
 	flag.StringVar(&file, "f", "", "load file path")

