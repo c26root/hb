@@ -26,7 +26,10 @@ func PrintInfo(l int) {
 		}
 	}
 
-	width, _, _ := terminal.GetSize(int(os.Stdout.Fd()))
+	width, _, err := terminal.GetSize(int(os.Stdout.Fd()))
+	if err != nil {
+		width = 50
+	}
 	fmt.Println(strings.Repeat("*", width))
 	for _, line := range lines {
 		fmt.Println(line)
