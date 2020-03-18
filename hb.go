@@ -404,7 +404,7 @@ func fetchUrlInfo(url string) {
 		}
 	}
 
-	if method == http.MethodPost || (method == "GET" && nRequestBody != "") {
+	if method == http.MethodPost || (method == http.MethodGet && nRequestBody != "") {
 		req, err = http.NewRequest(http.MethodPost, url, strings.NewReader(nRequestBody))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
 	} else if method == http.MethodPut {
@@ -413,7 +413,7 @@ func fetchUrlInfo(url string) {
 		req, err = http.NewRequest(method, url, nil)
 	}
 	if err != nil || req == nil {
-		fmt.Println(err)
+		log.Error(err)
 		return
 	}
 
