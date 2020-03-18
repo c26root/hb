@@ -2,12 +2,14 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/json"
+	"encoding/xml"
 	"flag"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"math/rand"
 	"net"
 	"net/http"
@@ -23,6 +25,8 @@ import (
 	"hb/common"
 
 	"github.com/gookit/color"
+	log "github.com/sirupsen/logrus"
+	"golang.org/x/crypto/ssh/terminal"
 	"golang.org/x/net/html/charset"
 	"golang.org/x/text/encoding"
 	"golang.org/x/text/encoding/unicode"
@@ -39,22 +43,22 @@ var (
 	forceSSL            bool
 	random              bool
 
-	file             string
-	f                *os.File
-	reqHost          string
-	method           string
-	requestBody      string
-	bodyFile         string
-	path             string
-	redirect         bool
-	grepString       string
-	filterString     string
-	code             int
-	proxies          string
-	isReplace        bool
-	result           []HttpInfo
-	extractInfoReStr string
-	extractInfoRe    *regexp.Regexp
+	file           string
+	f              *os.File
+	reqHost        string
+	method         string
+	requestBody    string
+	bodyFile       string
+	path           string
+	redirect       bool
+	grepStr        string
+	filterStr      string
+	code           int
+	proxies        string
+	isReplace      bool
+	result         []HttpInfo
+	extraInfoReStr string
+	extraInfoRe    *regexp.Regexp
 
 	host       string
 	port       string
@@ -75,7 +79,7 @@ var (
 	matchCount   uint64
 )
 
-type Addr struct {
+type Request struct {
 	Host string
 	Port int
 	URL  string
@@ -88,51 +92,32 @@ type HttpInfo struct {
 	URL           string `json:"url"`
 	Title         string `json:"title"`
 	Server        string `json:"server"`
-	ContentLength string `json:"length"`
-	ContentType   string `json:"type"`
-	XPoweredBy    string `json:xPoweredBy`
+	ContentLength string `json:"contentLength"`
+	ContentType   string `json:"contentType"`
+	PoweredBy     string `json:"poweredBy"`
 	ExtraInfo     string `json:"extraInfo"`
+	ResponseType  string `json:"responseType"`
 }
 
-func (i *Headers) String() string {
-	return strings.Join(*i, ", ")
+func (h *Headers) String() string {
+	return strings.Join(*h, ", ")
 }
 
-func (i *Headers) Set(value string) error {
-	*i = append(*i, value)
+func (h *Headers) Set(value string) error {
+	*h = append(*h, value)
 	return nil
 }
 
-func (i *HttpInfo) String() string {
-	return strconv.Itoa(i.StatusCode) + i.URL + i.Title + i.Server + i.ContentLength + i.ContentType + i.XPoweredBy
+func (h HttpInfo) String() string {
+	return strconv.Itoa(h.StatusCode) + h.URL + h.Title + h.Server + h.ContentLength + h.ContentType + h.PoweredBy + h.ResponseType
 }
 
-func validMethod(method string) bool {
-	methods := []string{"OPTIONS", "GET", "HEAD", "POST", "PUT", "DELETE", "TRACE", "CONNECT"}
-	for _, m := range methods {
-		if m == method {
-			return true
-		}
-	}
-	return false
-}
-
-func determineEncoding(r *bufio.Reader) encoding.Encoding {
-	b, err := r.Peek(1024)
+func printHorizontalLine() {
+	width, _, err := terminal.GetSize(int(os.Stdout.Fd()))
 	if err != nil {
-		// log.Error("get code error")
-		return unicode.UTF8
+		width = 50
 	}
-	e, _, _ := charset.DetermineEncoding(b, "")
-	return e
-}
-
-func getProxyURL(proxyStr string) *url.URL {
-	proxyURL, err := url.Parse(proxyStr)
-	if err != nil {
-		log.Println(err)
-	}
-	return proxyURL
+	fmt.Println(strings.Repeat("*", width))
 }
 
 func init() {
@@ -151,8 +136,8 @@ func init() {
 	flag.StringVar(&path, "path", "/", "request url path. -path /phpinfo.php")
 	flag.BoolVar(&redirect, "redirect", false, "follow 30x redirect")
 	flag.Var(&reqHeaders, "H", "request headers. exmaple: -H User-Agent: xx -H Referer: xx")
-	flag.StringVar(&grepString, "grep", "", "response body grep string. -grep phpinfo")
-	flag.StringVar(&filterString, "filter", "", "response grep string. -filter Apache")
+	flag.StringVar(&grepStr, "grep", "", "response body grep string. -grep phpinfo")
+	flag.StringVar(&filterStr, "filter", "", "response grep string. -filter Apache")
 	flag.IntVar(&code, "code", 0, "response status code grep. -code 200")
 	flag.StringVar(&proxies, "x", "", "set request proxy. -x socks://127.0.0.1:1080 | http://127.0.0.1:1086")
 	flag.BoolVar(&isReplace, "replace", false, "use {{scheme}} {{host}} {{hostname}} {{path}} template string")
@@ -161,7 +146,7 @@ func init() {
 	flag.BoolVar(&displayProgress, "pg", false, "display progress bar")
 	flag.BoolVar(&displayResponseBdoy, "response", false, "display response body")
 	flag.BoolVar(&random, "random", false, "random request")
-	flag.StringVar(&extractInfoReStr, "regexp", "", "regular expression for extracting information")
+	flag.StringVar(&extraInfoReStr, "regexp", "", "regular expression for extracting information")
 	flag.Parse()
 
 	if (host == "" || port == "") && file == "" {
@@ -170,7 +155,7 @@ func init() {
 	}
 }
 
-func makeClient() *http.Client {
+func createHTTPClient() *http.Client {
 	// 不校验证书
 	tr := &http.Transport{
 		Dial: (&net.Dialer{
@@ -183,7 +168,10 @@ func makeClient() *http.Client {
 
 	// 配置代理
 	if proxies != "" {
-		proxyURL := getProxyURL(proxies)
+		proxyURL, err := url.Parse(proxies)
+		if err != nil {
+			log.Error(err)
+		}
 		tr.Proxy = http.ProxyURL(proxyURL)
 	}
 
@@ -226,12 +214,12 @@ func main() {
 	ch = make(chan bool, threads)
 	ipList, _ := common.ParseIP(host)
 	portList, _ := common.ParsePort(port)
-	addrList := []Addr{}
+	requestList := []Request{}
 
 	if len(ipList) != 0 && len(portList) != 0 {
 		for _, host := range ipList {
 			for _, port := range portList {
-				addrList = append(addrList, Addr{Host: host, Port: port})
+				requestList = append(requestList, Request{Host: host, Port: port})
 			}
 		}
 	} else if file != "" {
@@ -252,8 +240,8 @@ func main() {
 
 			if strings.Contains(line, ":") {
 				if strings.HasPrefix(line, "http://") || strings.HasPrefix(line, "https://") {
-					if !isValidURL(line) {
-						log.Printf("Failed to resolve %s", line)
+					if !isValidUrl(line) {
+						log.Errorf("Failed to resolve %s", line)
 						continue
 					}
 					url = line
@@ -269,11 +257,10 @@ func main() {
 
 			if len(portList) != 0 {
 				for _, p := range portList {
-					// address := fmt.Sprintf("%s%s:%d%s", scheme, host, p, path)
-					addrList = append(addrList, Addr{Host: host, Port: p, URL: url})
+					requestList = append(requestList, Request{Host: host, Port: p, URL: url})
 				}
 			} else {
-				addrList = append(addrList, Addr{Host: host, Port: port, URL: url})
+				requestList = append(requestList, Request{Host: host, Port: port, URL: url})
 			}
 		}
 	}
@@ -287,64 +274,67 @@ func main() {
 		requestBody = string(dat)
 	}
 
+	// 输出结果文件
 	if outputFile != "" {
 		var err error
 		f, err = os.OpenFile(outputFile, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0755)
-		common.CheckError(err)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
 		defer f.Close()
 	}
 
-	if extractInfoReStr != "" {
-		extractInfoRe = regexp.MustCompile(fmt.Sprintf(`(?is)%s`, extractInfoReStr))
+	if extraInfoReStr != "" {
+		extraInfoRe = regexp.MustCompile(fmt.Sprintf(`(?is)%s`, extraInfoReStr))
 	}
 
-	// 打印所有参数
-	common.PrintInfo(len(addrList))
+	printHorizontalLine()
 
 	// 进度条
 	if displayProgress {
-		bar = pb.New(len(addrList))
+		bar = pb.New(len(requestList))
 		bar.ShowSpeed = false
 		bar.ShowTimeLeft = false
 		bar.Start()
 	}
 
 	if random {
-		Shuffle(addrList)
+		shuffle(requestList)
 	}
 
 	makeHeaders()
 
 	startTime := time.Now()
-	for _, addr := range addrList {
+	for _, request := range requestList {
 		ch <- true
 		wg.Add(1)
 
 		var requestURL string
-		if addr.URL != "" {
-			requestURL = addr.URL
-			u, _ := url.Parse(addr.URL)
+		if request.URL != "" {
+			requestURL = request.URL
+			u, _ := url.Parse(request.URL)
 			if path != "/" {
 				requestURL = fmt.Sprintf("%s://%s%s", u.Scheme, u.Host, path)
 			}
 		} else {
-			host := addr.Host
-			port := addr.Port
+			host := request.Host
+			port := request.Port
 
 			if !forceSSL {
 				requestURL = fmt.Sprintf("http://%s:%d%s", host, port, path)
 			} else {
 				requestURL = fmt.Sprintf("https://%s:%d%s", host, port, path)
 			}
-			if addr.Port == 443 {
+			if request.Port == 443 {
 				requestURL = fmt.Sprintf("https://%s:%d%s", host, port, path)
 			}
 		}
 
-		if isValidURL(requestURL) {
-			go FetchResponse(requestURL)
+		if isValidUrl(requestURL) {
+			go fetchUrlInfo(requestURL)
 		} else {
-			log.Printf("%s is not a valid url", requestURL)
+			log.Errorf("%s is not a valid url", requestURL)
 		}
 	}
 	wg.Wait()
@@ -383,18 +373,18 @@ func getVarMap(requestURL string) map[string]string {
 	return varMap
 }
 
-func CheckError(err error) {
+func checkError(err error) {
 	atomic.AddUint64(&errorCount, 1)
 	if strings.Contains(err.Error(), "too many open files") {
-		color.Red.Printf("[err] %s\n", err)
+		log.Error(err)
 		return
 	}
 	if debug {
-		color.Red.Printf("[err] %s\n", err)
+		log.Error(err)
 	}
 }
 
-func FetchResponse(url string) {
+func fetchUrlInfo(url string) {
 	defer func() {
 		<-ch
 		if bar != nil {
@@ -438,10 +428,10 @@ func FetchResponse(url string) {
 
 	}
 
-	client := makeClient()
+	client := createHTTPClient()
 	resp, err := client.Do(req)
 	if err != nil {
-		CheckError(err)
+		checkError(err)
 		return
 	}
 	defer resp.Body.Close()
@@ -459,7 +449,7 @@ func FetchResponse(url string) {
 	// 获取标题
 	body, err := ioutil.ReadAll(utf8Reader)
 	if err != nil {
-		CheckError(err)
+		checkError(err)
 		body = []byte("")
 	}
 	respBody := string(body)
@@ -471,9 +461,9 @@ func FetchResponse(url string) {
 		httpInfo.Title = strings.TrimSpace(m[1])
 	}
 
-	if extractInfoRe != nil {
+	if extraInfoRe != nil {
 		// 正则提取额外信息
-		m2 := extractInfoRe.FindStringSubmatch(respBody)
+		m2 := extraInfoRe.FindStringSubmatch(respBody)
 		if len(m2) >= 2 {
 			httpInfo.ExtraInfo = strings.TrimSpace(m2[1])
 		}
@@ -482,18 +472,20 @@ func FetchResponse(url string) {
 	// 从响应头中提取字段 Server Content-Type X-Powered-By
 	httpInfo.Server = resp.Header.Get("Server")
 	httpInfo.ContentLength = resp.Header.Get("Content-Length")
-	httpInfo.XPoweredBy = resp.Header.Get("X-Powered-By")
-	pair := strings.SplitN(resp.Header.Get("Content-Type"), ";", 2)
-	if len(pair) == 2 {
-		httpInfo.ContentType = pair[0]
+	httpInfo.PoweredBy = resp.Header.Get("X-Powered-By")
+	contentTypeSplit := strings.SplitN(resp.Header.Get("Content-Type"), ";", 2)
+	if len(contentTypeSplit) == 2 {
+		httpInfo.ContentType = contentTypeSplit[0]
 	}
+	// 获取响应类型
+	httpInfo.ResponseType = getResponseType(body)
 	result = append(result, httpInfo)
 
 	statusCode := strconv.Itoa(httpInfo.StatusCode)
 
 	// 通过响应头信息筛选响应 (response body. server httpInfo. status code)
-	if strings.Contains(respBody, grepString) && strings.Contains(httpInfo.String(), filterString) && (code == 0 || strings.HasPrefix(statusCode, strconv.Itoa(code))) {
-		var line = fmt.Sprintf("%-5d %-6s %-16s %-68s %-21s %-50s %s\n", httpInfo.StatusCode, httpInfo.ContentLength, httpInfo.ContentType, httpInfo.Server, httpInfo.XPoweredBy, httpInfo.URL, httpInfo.Title)
+	if strings.Contains(respBody, grepStr) && strings.Contains(httpInfo.String(), filterStr) && (code == 0 || strings.HasPrefix(statusCode, strconv.Itoa(code))) {
+		var line = fmt.Sprintf("%-5d %-5s %-6s %-16s %-68s %-21s %-50s %s\n", httpInfo.StatusCode, httpInfo.ResponseType, httpInfo.ContentLength, httpInfo.ContentType, httpInfo.Server, httpInfo.PoweredBy, httpInfo.URL, httpInfo.Title)
 		writeLine := line
 		atomic.AddUint64(&matchCount, 1)
 
@@ -524,12 +516,53 @@ func FetchResponse(url string) {
 	}
 }
 
-func isValidURL(s string) bool {
+func validMethod(method string) bool {
+	methods := []string{"OPTIONS", "GET", "HEAD", "POST", "PUT", "DELETE", "TRACE", "CONNECT"}
+	for _, m := range methods {
+		if m == method {
+			return true
+		}
+	}
+	return false
+}
+
+func determineEncoding(r *bufio.Reader) encoding.Encoding {
+	b, err := r.Peek(1024)
+	if err != nil {
+		return unicode.UTF8
+	}
+	e, _, _ := charset.DetermineEncoding(b, "")
+	return e
+}
+
+func getResponseType(b []byte) string {
+	if isEmptyPage(b) {
+		return "empty"
+	} else if isJSON(b) {
+		return "json"
+	}
+	return ""
+}
+func isEmptyPage(b []byte) bool {
+	return len(bytes.TrimSpace(b)) == 0
+}
+
+func isXML(b []byte) bool {
+	var s interface{}
+	return xml.Unmarshal(b, &s) == nil
+}
+
+func isJSON(b []byte) bool {
+	var s interface{}
+	return json.Unmarshal(b, &s) == nil
+}
+
+func isValidUrl(s string) bool {
 	_, err := url.Parse(s)
 	return err == nil
 }
 
-func Shuffle(vals []Addr) {
+func shuffle(vals []Request) {
 	r := rand.New(rand.NewSource(time.Now().Unix()))
 	for len(vals) > 0 {
 		n := len(vals)
