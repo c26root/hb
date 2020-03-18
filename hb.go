@@ -9,6 +9,7 @@ import (
 	"encoding/xml"
 	"flag"
 	"fmt"
+	"hb/common"
 	"io/ioutil"
 	"math/rand"
 	"net"
@@ -21,8 +22,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"hb/common"
 
 	"github.com/gookit/color"
 	log "github.com/sirupsen/logrus"
@@ -207,7 +206,7 @@ func main() {
 
 	// 检查是否合法请求方法
 	if !validMethod(strings.ToUpper(method)) {
-		fmt.Printf("net/http: invalid method %q", method)
+		fmt.Printf("invalid method %q", method)
 		os.Exit(0)
 	}
 
@@ -536,14 +535,15 @@ func determineEncoding(r *bufio.Reader) encoding.Encoding {
 }
 
 func getResponseType(b []byte) string {
-	if isEmptyPage(b) {
+	if isEmpty(b) {
 		return "empty"
 	} else if isJSON(b) {
 		return "json"
 	}
 	return ""
 }
-func isEmptyPage(b []byte) bool {
+
+func isEmpty(b []byte) bool {
 	return len(bytes.TrimSpace(b)) == 0
 }
 
