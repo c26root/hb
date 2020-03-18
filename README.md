@@ -1,5 +1,12 @@
 # hb
-> Fast http batch request tool 
+
+Fast http batch request tool 
+
+
+## Installing
+```
+bash build.sh
+```
 
 ## Example 
 
